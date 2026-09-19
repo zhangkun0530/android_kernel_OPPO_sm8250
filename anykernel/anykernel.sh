@@ -4,24 +4,24 @@
 ### AnyKernel setup
 # begin properties
 properties() { '
-kernel.string=Realme GT Neo 2 / Realme X50 Pro B I G S H O T
-do.devicecheck=0
+kernel.string=KernelSU for OPPO Reno6 Pro+ 5G (PENM00/OP4EC1)
+do.devicecheck=1
 do.modules=0
 do.systemless=1
 do.cleanup=1
 do.cleanuponabort=0
-device.name1=RMX3370
-device.name2=RMX2071
-device.name3=RMX2076
-device.name4=RMX2075
-device.name5=RMX2072
-supported.versions=
+device.name1=PENM00
+device.name2=OP4EC1
+device.name3=reno6proplus
+device.name4=CPH2247
+device.name5=CPH2249
+supported.versions=13
 supported.patchlevels=
 '; } # end properties
 
 # shell variables
 block=/dev/block/bootdevice/by-name/boot;
-is_slot_device=0;
+is_slot_device=1;
 ramdisk_compression=auto;
 patch_vbmeta_flag=auto;
 
@@ -32,6 +32,8 @@ patch_vbmeta_flag=auto;
 ## AnyKernel boot install
 dump_boot;
 
+# Disable vbmeta verification if the flag is set.
+# Only needed if your device/ROM enforces verified boot on the kernel.
 vbmeta_disable_verification;
 
 write_boot;
