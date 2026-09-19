@@ -161,12 +161,33 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Tune .config"
-          # KernelSU + kprobes
           if [ "${{ github.event.inputs.kernelsu_variant }}" = "kernelsu-next" ]; then
-            ./scripts/config --file out/.config --enable CONFIG_KSU
-            ./scripts/config --file out/.config --enable CONFIG_KPROBES
-            ./scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
-            ./scripts/config --file out/.config --enable CONFIG_HAVE_KPROBES
+            CFG=./scripts/config
+            C="--file out/.config"
+
+            # --- kprobes prerequisites -------------------------------------
+            # KernelSU-Next's Kbuild aborts with
+            #   "No hooks were defined, please integrate manual hooks"
+            # unless CONFIG_KSU_KPROBES_HOOK=y, which depends on
+            #   KRETPROBES && KPROBES && HAVE_SYSCALL_TRACEPOINTS
+            # (all three are selected/supported by arch/arm64 on 4.19).
+            $CFG $C --enable  CONFIG_MODULES
+            $CFG $C --enable  CONFIG_KALLSYMS
+            $CFG $C --enable  CONFIG_KALLSYMS_ALL
+            $CFG $C --enable  CONFIG_HAVE_KPROBES
+            $CFG $C --enable  CONFIG_HAVE_KRETPROBES
+            $CFG $C --enable  CONFIG_HAVE_SYSCALL_TRACEPOINTS
+            $CFG $C --enable  CONFIG_KPROBES
+            $CFG $C --enable  CONFIG_KRETPROBES
+            $CFG $C --enable  CONFIG_KPROBE_EVENTS
+            $CFG $C --enable  CONFIG_FTRACE
+            $CFG $C --enable  CONFIG_TRACING
+
+            # --- KernelSU itself ------------------------------------------
+            $CFG $C --enable  CONFIG_KSU
+            # KSU_KPROBES_HOOK depends on !KSU_MANUAL_HOOK -> disable it first
+            $CFG $C --disable CONFIG_KSU_MANUAL_HOOK
+            $CFG $C --enable  CONFIG_KSU_KPROBES_HOOK
           fi
           # Belt-and-braces: neutralise stack-init hardening that trips older clang
           ./scripts/config --file out/.config --disable CONFIG_INIT_STACK_ALL_ZERO
@@ -177,9 +198,18 @@ jobs:
           make "${MAKE_FLAGS[@]}" olddefconfig
           echo "::endgroup::"
 
-          echo "::group::Relevant config"
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_INIT_STACK" out/.config || true
+          echo "::group::Relevant config (post olddefconfig)"
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_HAVE_SYSCALL_TRACEPOINTS|CONFIG_INIT_STACK" out/.config || true
           echo "::endgroup::"
+
+          if [ "${{ github.event.inputs.kernelsu_variant }}" = "kernelsu-next" ]; then
+            if ! grep -q "^CONFIG_KSU_KPROBES_HOOK=y" out/.config; then
+              echo "::error::CONFIG_KSU_KPROBES_HOOK did not stick -> KernelSU Kbuild will abort."
+              echo "--- why (KPROBES deps) ---"
+              grep -E "CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_HAVE_SYSCALL_TRACEPOINTS|CONFIG_MODULES|CONFIG_KALLSYMS" out/.config || true
+              exit 1
+            fi
+          fi
 
           echo "::group::Effective compile flags (dry-run, diagnostics)"
           make "${MAKE_FLAGS[@]}" V=1 -n techpack/audio/dsp/q6asm.o 2>&1 | tail -2 || echo "dry-run unavailable"
