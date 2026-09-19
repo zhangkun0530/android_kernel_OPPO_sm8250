@@ -84,6 +84,29 @@ jobs:
           # sanity: confirm KernelSU landed in the tree
           ls -d drivers/kernelsu KernelSU 2>/dev/null || echo "warning: no kernelsu dir found"
 
+      - name: Fix 32-bit VDSO (vdso32) compat assembler
+        run: |
+          set -e
+          sudo apt-get install -y binutils-arm-linux-gnueabi
+          # vdso32/Makefile resolves the compat toolchain dir via:
+          #   $(dir $(shell which $(CROSS_COMPILE_COMPAT)elfedit))
+          # If elfedit is absent the dir is empty -> `--prefix=` empty and clang
+          # falls back to PATH `as`. Keep a stand-in so it always resolves.
+          if ! command -v arm-linux-gnueabi-elfedit >/dev/null 2>&1; then
+            echo "arm-linux-gnueabi-elfedit missing; installing stand-in"
+            sudo ln -sf /usr/bin/arm-linux-gnueabi-ld /usr/bin/arm-linux-gnueabi-elfedit
+          fi
+          command -v arm-linux-gnueabi-elfedit
+          command -v arm-linux-gnueabi-as
+          command -v arm-linux-gnueabi-ld
+          # The 32-bit vDSO forces the GNU assembler via -no-integrated-as, but the
+          # only `as` on this runner is x86_64 and rejects the ARM `-EL` flag:
+          #   .../bin/as: unrecognized option '-EL'
+          # Drop it so clang uses its own integrated assembler (supports ARM32).
+          sed -i 's/CC_COMPAT_CLANG_FLAGS += -no-integrated-as -Qunused-arguments/CC_COMPAT_CLANG_FLAGS += -Qunused-arguments/' arch/arm64/kernel/vdso32/Makefile
+          echo "--- resulting flags ---"
+          grep -n "CC_COMPAT_CLANG_FLAGS" arch/arm64/kernel/vdso32/Makefile
+
       - name: Build kernel
         run: |
           set -o pipefail
