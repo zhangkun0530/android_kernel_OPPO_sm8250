@@ -1,0 +1,189 @@
+name: Build KernelSU Kernel for OPPO Reno6 Pro+ 5G
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernelsu_variant:
+        description: 'KernelSU variant to integrate'
+        required: true
+        default: 'kernelsu-next'
+        type: choice
+        options:
+          - kernelsu-next
+          - kernelsu-v0.9.5
+      kprobe_method:
+        description: 'Enable kprobe hooks (required for non-GKI 4.19)'
+        required: true
+        default: true
+        type: boolean
+      defconfig:
+        description: 'Kernel defconfig (relative to arch/arm64/configs)'
+        required: true
+        default: 'vendor/sm8250_defconfig'
+      build_user:
+        description: 'KBUILD_BUILD_USER'
+        required: true
+        default: 'WorkBuddy'
+      build_host:
+        description: 'KBUILD_BUILD_HOST'
+        required: true
+        default: 'GitHub-Actions'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KBUILD_BUILD_USER: ${{ github.event.inputs.build_user }}
+      KBUILD_BUILD_HOST: ${{ github.event.inputs.build_host }}
+      CCACHE_COMPILERCHECK: '%compiler% -dumpmachine; %compiler% -dumpversion'
+      CCACHE_NOHASHDIR: 'true'
+      CCACHE_MAXFILES: 0
+      CCACHE_MAXSIZE: 3G
+
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex git gnupg gperf \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            liblz4-tool libncurses5-dev libncursesw5-dev libsdl1.2-dev \
+            libxml2 libxml2-utils lzop pngcrush schedtool squashfs-tools \
+            xsltproc zip zlib1g-dev python3 python-is-python3
+
+      - name: Checkout repo files (anykernel script only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            anykernel
+          sparse-checkout-cone-mode: false
+
+      - name: Clone kernel source (sm8250, branch 14.1)
+        run: |
+          git clone -b 14.1 --depth 1 https://github.com/youngguo18/android_kernel_OPPO_sm8250 kernel_src
+          ls kernel_src
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-sm8250-${{ github.event.inputs.kernelsu_variant }}
+          max-size: 3G
+
+      - name: Download Proton Clang toolchain
+        run: |
+          mkdir -p ~/toolchains
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git ~/toolchains/proton-clang
+          echo "CLANG_PATH=~/toolchains/proton-clang/bin" >> $GITHUB_ENV
+
+      - name: Integrate KernelSU
+        working-directory: kernel_src
+        run: |
+          set -e
+          VARIANT="${{ github.event.inputs.kernelsu_variant }}"
+          if [ "$VARIANT" = "kernelsu-next" ]; then
+            echo "::group::Integrating KernelSU-Next (latest stable tag)"
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s
+            echo "::endgroup::"
+          elif [ "$VARIANT" = "kernelsu-v0.9.5" ]; then
+            echo "::group::Integrating official KernelSU v0.9.5"
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/v0.9.5/kernel/setup.sh" | bash -s v0.9.5
+            echo "::endgroup::"
+          else
+            echo "Unknown variant: $VARIANT"
+            exit 1
+          fi
+          ls -la drivers/kernelsu 2>/dev/null || true
+          ls -la KernelSU/kernel 2>/dev/null || true
+
+      - name: Apply KernelSU defconfig flags
+        working-directory: kernel_src
+        run: |
+          DEFCONFIG="${{ github.event.inputs.defconfig }}"
+          DEFCONFIG_PATH="arch/arm64/configs/${DEFCONFIG}"
+          if [ ! -f "$DEFCONFIG_PATH" ]; then
+            DEFCONFIG_PATH="arch/arm64/configs/vendor/${DEFCONFIG}"
+          fi
+          echo "Using defconfig path: $DEFCONFIG_PATH"
+          if grep -q "CONFIG_KSU" "$DEFCONFIG_PATH"; then
+            sed -i 's/.*CONFIG_KSU.*/CONFIG_KSU=y/' "$DEFCONFIG_PATH"
+          else
+            echo "CONFIG_KSU=y" >> "$DEFCONFIG_PATH"
+          fi
+          if [ "${{ github.event.inputs.kprobe_method }}" = "true" ]; then
+            for cfg in CONFIG_KPROBES CONFIG_KPROBE_EVENTS CONFIG_KSU_KPROBE_HOOKS; do
+              if grep -q "^${cfg}" "$DEFCONFIG_PATH"; then
+                sed -i "s/.*${cfg}.*/${cfg}=y/" "$DEFCONFIG_PATH"
+              else
+                echo "${cfg}=y" >> "$DEFCONFIG_PATH"
+              fi
+            done
+          fi
+          echo "::group::Relevant KSU config lines"
+          grep -n "CONFIG_KSU\|CONFIG_KPROBE" "$DEFCONFIG_PATH" || true
+          echo "::endgroup::"
+
+      - name: Build kernel
+        working-directory: kernel_src
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export USE_CCACHE=1
+          export CCACHE_EXEC=/usr/bin/ccache
+
+          MAKE_FLAGS=(
+            CC=clang
+            AR=llvm-ar
+            NM=llvm-nm
+            OBJCOPY=llvm-objcopy
+            OBJDUMP=llvm-objdump
+            STRIP=llvm-strip
+            LLVM=1
+            LLVM_IAS=1
+            O=out
+          )
+
+          DEFCONFIG="${{ github.event.inputs.defconfig }}"
+          make "${MAKE_FLAGS[@]}" "$DEFCONFIG"
+          make "${MAKE_FLAGS[@]}" -j$(nproc --all)
+
+      - name: Prepare AnyKernel3 package
+        run: |
+          mkdir -p anykernel/tools
+          cp kernel_src/out/arch/arm64/boot/Image anykernel/ 2>/dev/null || \
+            cp kernel_src/out/arch/arm64/boot/Image.gz anykernel/
+          cp kernel_src/out/arch/arm64/boot/dtbo.img anykernel/ 2>/dev/null || true
+          curl -LSs "https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh" -o anykernel/tools/ak3-core.sh
+          ls -la anykernel/ anykernel/tools/
+
+      - name: Zip AnyKernel3 package
+        run: |
+          cd anykernel
+          zip -r9 "../KernelSU-Reno6ProPlus-$(date +%Y%m%d-%H%M)-${{ github.event.inputs.kernelsu_variant }}.zip" *
+          cd ..
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelSU-Reno6ProPlus-${{ github.event.inputs.kernelsu_variant }}-${{ github.run_number }}
+          path: KernelSU-Reno6ProPlus-*.zip
+          if-no-files-found: error
+
+      - name: Show build summary
+        run: |
+          echo "Build completed."
+          ls -lh KernelSU-Reno6ProPlus-*.zip
+          echo "sha256:"
+          sha256sum KernelSU-Reno6ProPlus-*.zip
