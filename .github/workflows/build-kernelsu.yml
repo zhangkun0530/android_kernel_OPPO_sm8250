@@ -86,6 +86,29 @@ jobs:
           echo "--- KSU version ---"
           grep -rn "KERNELSU_VERSION\|KSU_VERSION" KernelSU-Next/kernel/*.h 2>/dev/null | head -5 || true
 
+      - name: Fix KernelSU 4.19 compat gaps (strscpy_pad)
+        run: |
+          set -e
+          echo "::group::Kernel string helper availability"
+          grep -nE "strscpy|strscpy_pad" include/linux/string.h || true
+          echo "::endgroup::"
+          HDR=KernelSU-Next/kernel/compat/kernel_compat.h
+          [ -f "$HDR" ] || { echo "::error::$HDR not found"; exit 1; }
+          # KernelSU-Next assumes strscpy_pad() exists from 4.14.222 onwards.
+          # That is only true for Android common kernels which backported it.
+          # Upstream added strscpy_pad() in 5.3; this OPPO 4.19.157-perf+ tree
+          # only has strscpy(), so the 4.14.222 branch calls a non-existent
+          # symbol -> "implicit declaration of function 'strscpy_pad'" + -Werror.
+          # Lower the guard so the compat shim falls back to strscpy()+memset().
+          if grep -q "strscpy_pad" include/linux/string.h; then
+            echo "kernel provides strscpy_pad -> leaving compat header untouched"
+          else
+            echo "kernel has NO strscpy_pad -> lowering __strscpy_pad guard to 5.3"
+            sed -i 's/KERNEL_VERSION(4, 14, 222)/KERNEL_VERSION(5, 3, 0)/' "$HDR"
+          fi
+          echo "--- resulting __strscpy_pad ---"
+          grep -n -A6 "static inline ssize_t __strscpy_pad" "$HDR"
+
       - name: Neutralise techpack -Werror / packed-member
         run: |
           set -e
