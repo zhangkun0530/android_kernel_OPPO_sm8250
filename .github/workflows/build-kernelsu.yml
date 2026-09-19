@@ -85,6 +85,8 @@ jobs:
         run: |
           mkdir -p ~/toolchains
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git ~/toolchains/proton-clang
+          git -C ~/toolchains/proton-clang fetch --depth=1 origin 9fb011b183fe7e69b04b873ef6533b4b077e3c5e
+          git -C ~/toolchains/proton-clang checkout FETCH_HEAD
           echo "CLANG_PATH=~/toolchains/proton-clang/bin" >> $GITHUB_ENV
 
       - name: Integrate KernelSU
@@ -130,8 +132,12 @@ jobs:
               fi
             done
           fi
-          # Neutralize toolchain-incompatible hardening / Werror flags for clang-13
-          for cfg in CONFIG_WERROR CONFIG_CC_WERROR; do
+          # Neutralize toolchain-incompatible hardening / Werror flags.
+          # Proton Clang (clang-13+ and newer builds) rejects -ftrivial-auto-var-init=zero
+          # unless an opt-in flag is given; that opt-in flag itself was removed in later
+          # Proton Clang. Disabling the source configs avoids the flag entirely (works on
+          # every clang version) and keeps the build reproducible.
+          for cfg in CONFIG_INIT_STACK_ALL_ZERO CONFIG_INIT_STACK_ALL_PATTERN CONFIG_WERROR CONFIG_CC_WERROR; do
             if grep -q "^${cfg}" "$DEFCONFIG_PATH"; then
               sed -i "s/.*${cfg}.*/${cfg}=n/" "$DEFCONFIG_PATH"
             else
@@ -152,7 +158,7 @@ jobs:
           export CCACHE_EXEC=/usr/bin/ccache
 
           MAKE_FLAGS=(
-            CC="clang -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
+            CC=clang
             AR=llvm-ar
             NM=llvm-nm
             OBJCOPY=llvm-objcopy
