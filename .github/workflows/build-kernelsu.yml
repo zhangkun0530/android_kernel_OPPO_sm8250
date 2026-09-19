@@ -130,6 +130,14 @@ jobs:
               fi
             done
           fi
+          # Neutralize toolchain-incompatible hardening / Werror flags for clang-13
+          for cfg in CONFIG_WERROR CONFIG_CC_WERROR; do
+            if grep -q "^${cfg}" "$DEFCONFIG_PATH"; then
+              sed -i "s/.*${cfg}.*/${cfg}=n/" "$DEFCONFIG_PATH"
+            else
+              echo "${cfg}=n" >> "$DEFCONFIG_PATH"
+            fi
+          done
           echo "::group::Relevant KSU config lines"
           grep -n "CONFIG_KSU\|CONFIG_KPROBE" "$DEFCONFIG_PATH" || true
           echo "::endgroup::"
@@ -144,7 +152,7 @@ jobs:
           export CCACHE_EXEC=/usr/bin/ccache
 
           MAKE_FLAGS=(
-            CC=clang
+            CC="clang -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
             AR=llvm-ar
             NM=llvm-nm
             OBJCOPY=llvm-objcopy
