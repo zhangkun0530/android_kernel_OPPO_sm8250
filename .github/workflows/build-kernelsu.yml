@@ -253,7 +253,12 @@ jobs:
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             CLANG_TRIPLE=aarch64-linux-gnu-
-            KCFLAGS="-Wno-address-of-packed-member -Wno-error=address-of-packed-member"
+            # -DKSU_KPROBES_HOOK: KernelSU-Next's Kbuild only puts this in
+            # ccflags-y, which kbuild applies to the declaring directory; the
+            # runtime/ sub-object was compiled without it and lost its whole
+            # #ifdef KSU_KPROBES_HOOK body. Pass it globally so every KernelSU
+            # file sees it (nothing outside KernelSU checks this macro).
+            KCFLAGS="-Wno-address-of-packed-member -Wno-error=address-of-packed-member -DKSU_KPROBES_HOOK"
           )
 
           echo "::group::Generate defconfig"
@@ -313,6 +318,9 @@ jobs:
 
           echo "::group::Effective compile flags (dry-run, diagnostics)"
           make "${MAKE_FLAGS[@]}" V=1 -n techpack/audio/dsp/q6asm.o 2>&1 | tail -2 || echo "dry-run unavailable"
+          echo "--- does -DKSU_KPROBES_HOOK reach the KernelSU subdirs? ---"
+          make "${MAKE_FLAGS[@]}" V=1 -n drivers/kernelsu/hook/hook_manager.o 2>&1 | tail -1 | grep -o "KSU_KPROBES_HOOK" || echo "  hook/: MACRO MISSING"
+          make "${MAKE_FLAGS[@]}" V=1 -n drivers/kernelsu/runtime/ksud_integration.o 2>&1 | tail -1 | grep -o "KSU_KPROBES_HOOK" || echo "  runtime/: MACRO MISSING"
           echo "::endgroup::"
 
           echo "::group::Compile"
