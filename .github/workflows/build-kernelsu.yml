@@ -66,23 +66,42 @@ jobs:
           "$CLANG_DIR/bin/clang" --version
           ls "$CLANG_DIR/bin" | head -30
 
-      - name: Integrate KernelSU
+      - name: Integrate KernelSU-Next (legacy tag, 4.19 compatible)
         run: |
           set -e
           if [ "${{ github.event.inputs.kernelsu_variant }}" = "kernelsu-next" ]; then
-            echo "::group::Integrating KernelSU-Next"
-            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" -o /tmp/ksu_setup.sh
-            bash /tmp/ksu_setup.sh || {
-              echo "setup.sh failed, trying manual clone"
-              git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git /tmp/KernelSU-Next
-              bash /tmp/KernelSU-Next/kernel/setup.sh
-            }
+            echo "::group::Integrating KernelSU-Next v3.2.0-legacy"
+            # IMPORTANT: the `next`/`main` branch targets GKI / 5.10+ kernels and
+            # includes <linux/pgtable.h> unconditionally -> fatal on 4.19.
+            # The `legacy` line guards it behind LINUX_VERSION_CODE >= 5.10.
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" -o /tmp/ksu_setup.sh
+            bash /tmp/ksu_setup.sh v3.2.0-legacy
             echo "::endgroup::"
           else
             echo "Skipping KernelSU integration (variant=none)"
           fi
-          # sanity: confirm KernelSU landed in the tree
-          ls -d drivers/kernelsu KernelSU 2>/dev/null || echo "warning: no kernelsu dir found"
+          ls -ld drivers/kernelsu KernelSU-Next/kernel 2>/dev/null || echo "warning: no kernelsu dir found"
+          echo "--- drivers/Makefile tail ---"
+          grep -n "kernelsu" drivers/Makefile || true
+          echo "--- KSU version ---"
+          grep -rn "KERNELSU_VERSION\|KSU_VERSION" KernelSU-Next/kernel/*.h 2>/dev/null | head -5 || true
+
+      - name: Neutralise techpack -Werror / packed-member
+        run: |
+          set -e
+          echo "::group::Where does -Werror come from?"
+          grep -rn -- "-Werror" techpack/ 2>/dev/null | head -20 || echo "  (none found in techpack/)"
+          echo "::endgroup::"
+          # Strip standalone -Werror from any techpack Makefile (keep -Werror=xxx forms)
+          find techpack -name 'Makefile*' -print0 2>/dev/null \
+            | xargs -0 -r sed -i -E 's/(^| )-Werror($| )/\1 /g' || true
+          # Force the packed-member warning off at KBUILD_CFLAGS level.
+          # The shipped `cc-disable-warning` probe silently yields nothing here,
+          # so -Waddress-of-packed-member stays on and -Werror escalates it.
+          sed -i 's@.*cc-disable-warning, address-of-packed-member.*@KBUILD_CFLAGS\t+= -Wno-address-of-packed-member -Wno-error=address-of-packed-member@' Makefile
+          sed -i 's@.*cc-disable-warning,address-of-packed-member.*@KBUILD_CFLAGS\t+= -Wno-address-of-packed-member -Wno-error=address-of-packed-member@' Makefile
+          echo "--- resulting line ---"
+          grep -n "address-of-packed-member" Makefile
 
       - name: Fix 32-bit VDSO (vdso32) compat assembler
         run: |
@@ -134,6 +153,7 @@ jobs:
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             CLANG_TRIPLE=aarch64-linux-gnu-
+            KCFLAGS="-Wno-address-of-packed-member -Wno-error=address-of-packed-member"
           )
 
           echo "::group::Generate defconfig"
@@ -159,6 +179,10 @@ jobs:
 
           echo "::group::Relevant config"
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_INIT_STACK" out/.config || true
+          echo "::endgroup::"
+
+          echo "::group::Effective compile flags (dry-run, diagnostics)"
+          make "${MAKE_FLAGS[@]}" V=1 -n techpack/audio/dsp/q6asm.o 2>&1 | tail -2 || echo "dry-run unavailable"
           echo "::endgroup::"
 
           echo "::group::Compile"
