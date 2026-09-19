@@ -85,9 +85,9 @@ jobs:
         run: |
           mkdir -p ~/toolchains
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git ~/toolchains/proton-clang
-          git -C ~/toolchains/proton-clang fetch --depth=1 origin 9fb011b183fe7e69b04b873ef6533b4b077e3c5e
-          git -C ~/toolchains/proton-clang checkout FETCH_HEAD
-          echo "CLANG_PATH=~/toolchains/proton-clang/bin" >> $GITHUB_ENV
+          git -C "$HOME/toolchains/proton-clang" fetch --depth=1 origin 9fb011b183fe7e69b04b873ef6533b4b077e3c5e
+          git -C "$HOME/toolchains/proton-clang" checkout FETCH_HEAD
+          echo "CLANG_PATH=$HOME/toolchains/proton-clang/bin" >> $GITHUB_ENV
 
       - name: Integrate KernelSU
         working-directory: kernel_src
@@ -158,7 +158,7 @@ jobs:
           export CCACHE_EXEC=/usr/bin/ccache
 
           MAKE_FLAGS=(
-            CC=clang
+            CC="clang -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"
             AR=llvm-ar
             NM=llvm-nm
             OBJCOPY=llvm-objcopy
@@ -166,11 +166,18 @@ jobs:
             STRIP=llvm-strip
             LLVM=1
             LLVM_IAS=1
+            LD=ld.lld
             O=out
           )
 
           DEFCONFIG="${{ github.event.inputs.defconfig }}"
           make "${MAKE_FLAGS[@]}" "$DEFCONFIG"
+          # Belt-and-suspenders: disable init-stack hardening in the generated .config
+          # so -ftrivial-auto-var-init=zero is never passed (works on any clang version).
+          ./scripts/config --file out/.config \
+            --disable CONFIG_INIT_STACK_ALL_ZERO \
+            --disable CONFIG_INIT_STACK_ALL_PATTERN \
+            --enable  CONFIG_INIT_STACK_NONE || true
           make "${MAKE_FLAGS[@]}" -j$(nproc --all)
 
       - name: Prepare AnyKernel3 package
